@@ -22,6 +22,8 @@ jobs:
       RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       LOCATION: ${{ vars.AZURE_LOCATION }}
       IDENTITY_RESOURCE_ID: ${{ vars.AZURE_IDENTITY_RESOURCE_ID }}
+      CONTAINER_APPS_ENVIRONMENT_ID: ${{ vars.AZURE_CONTAINER_APPS_ENVIRONMENT_ID }}
+      CONTAINER_APPS_LOCATION: ${{ vars.AZURE_CONTAINER_APPS_LOCATION }}
       IMAGE_TAG: ${{ github.sha }}
     steps:
       - name: Checkout
@@ -49,6 +51,10 @@ jobs:
           set -euo pipefail
           if [[ -z "$AZURE_CLIENT_ID" || -z "$AZURE_TENANT_ID" || -z "$AZURE_SUBSCRIPTION_ID" || -z "$RESOURCE_GROUP" || -z "$LOCATION" || -z "$IDENTITY_RESOURCE_ID" ]]; then
             echo "::error::Azure secrets and variables are required. Configure them using scripts/setup-oidc.sh and GitHub Actions settings."
+            exit 1
+          fi
+          if [[ -n "$CONTAINER_APPS_ENVIRONMENT_ID" && -z "$CONTAINER_APPS_LOCATION" ]]; then
+            echo "::error::AZURE_CONTAINER_APPS_LOCATION is required when using an existing Container Apps environment."
             exit 1
           fi
 
@@ -116,6 +122,8 @@ jobs:
             --template-file infra/main.bicep \
             --parameters @infra/main.parameters.json \
               registryIdentityResourceId="$IDENTITY_RESOURCE_ID" \
+              existingEnvironmentResourceId="$CONTAINER_APPS_ENVIRONMENT_ID" \
+              containerAppsLocation="$CONTAINER_APPS_LOCATION" \
               apiImage="$login_server/api:$IMAGE_TAG" \
               frontendImage="$login_server/frontend:$IMAGE_TAG" \
             --output none

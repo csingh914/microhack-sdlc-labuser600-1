@@ -6,7 +6,7 @@
 //   ACR ──images──> ┌─────────────── Container Apps Environment ───────────────┐
 //                   │  frontend (nginx, :80, external)  ──proxy──>  api (:3000) │
 //                   └───────────────────────────────────────────────────────────┘
-//                                    │ logs
+//                                    │ logs (for a newly created environment)
 //                            Log Analytics workspace
 //
 // The frontend's nginx proxies /api to the api app using API_HOST / API_PORT
@@ -20,8 +20,14 @@
 
 targetScope = 'resourceGroup'
 
-@description('Azure region for all resources. Defaults to the resource group location.')
+@description('Azure region for resources created by this template. Defaults to the resource group location.')
 param location string = resourceGroup().location
+
+@description('Resource ID of an existing Container Apps environment. Leave empty to create one.')
+param existingEnvironmentResourceId string = ''
+
+@description('Azure region of the existing Container Apps environment. Defaults to location.')
+param containerAppsLocation string = ''
 
 @description('Short prefix used to derive resource names (lowercase letters/numbers).')
 @minLength(2)
@@ -59,6 +65,10 @@ var logAnalyticsName = '${baseName}-logs'
 var environmentResourceName = '${baseName}-env'
 var apiAppName = '${baseName}-api'
 var frontendAppName = '${baseName}-frontend'
+var appEnvironmentId = !empty(existingEnvironmentResourceId)
+  ? existingEnvironmentResourceId
+  : environment!.outputs.environmentId
+var appLocation = !empty(containerAppsLocation) ? containerAppsLocation : location
 
 var commonTags = {
   project: 'octocat-supply'
@@ -82,7 +92,7 @@ module registry 'modules/registry.bicep' = {
 // -----------------------------------------------------------------------------
 // Log Analytics (dependency of the Container Apps environment)
 // -----------------------------------------------------------------------------
-module logAnalytics 'modules/loganalytics.bicep' = {
+module logAnalytics 'modules/loganalytics.bicep' = if (empty(existingEnvironmentResourceId)) {
   name: 'loganalytics'
   params: {
     location: location
@@ -94,12 +104,12 @@ module logAnalytics 'modules/loganalytics.bicep' = {
 // -----------------------------------------------------------------------------
 // Container Apps managed environment
 // -----------------------------------------------------------------------------
-module environment 'modules/containerapp-env.bicep' = {
+module environment 'modules/containerapp-env.bicep' = if (empty(existingEnvironmentResourceId)) {
   name: 'containerapp-env'
   params: {
     location: location
     environmentName: environmentResourceName
-    logAnalyticsWorkspaceId: logAnalytics.outputs.workspaceId
+    logAnalyticsWorkspaceId: logAnalytics!.outputs.workspaceId
     tags: commonTags
   }
 }
@@ -110,9 +120,9 @@ module environment 'modules/containerapp-env.bicep' = {
 module apiApp 'modules/containerapp.bicep' = {
   name: 'api-app'
   params: {
-    location: location
+    location: appLocation
     appName: apiAppName
-    environmentId: environment.outputs.environmentId
+    environmentId: appEnvironmentId
     image: apiImage
     targetPort: 3000
     externalIngress: false
@@ -134,9 +144,9 @@ module apiApp 'modules/containerapp.bicep' = {
 module frontendApp 'modules/containerapp.bicep' = {
   name: 'frontend-app'
   params: {
-    location: location
+    location: appLocation
     appName: frontendAppName
-    environmentId: environment.outputs.environmentId
+    environmentId: appEnvironmentId
     image: frontendImage
     targetPort: 80
     externalIngress: true
@@ -169,3 +179,6 @@ output frontendUrl string = 'https://${frontendApp.outputs.fqdn}'
 
 @description('FQDN of the internal API app.')
 output apiFqdn string = apiApp.outputs.fqdn
+
+@description('Resource ID of the Container Apps environment used by the apps.')
+output environmentResourceId string = appEnvironmentId

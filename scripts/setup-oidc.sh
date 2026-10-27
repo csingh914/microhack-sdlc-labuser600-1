@@ -16,7 +16,7 @@
 # Actions secrets. If the gh write fails the values are printed for manual entry.
 #
 # Usage:
-#   ./scripts/setup-oidc.sh [-g <resource-group>] [-l <location>] [-r <owner/repo>] [-b <branch>] [-e <gh-environment>] [-n <identity-name>] [-a <acr-name>]
+#   ./scripts/setup-oidc.sh [-g <resource-group>] [-l <location>] [-r <owner/repo>] [-b <branch>] [-e <gh-environment>] [-n <identity-name>] [-a <acr-name>] [-c <container-apps-environment-resource-id>]
 
 set -euo pipefail
 
@@ -27,9 +27,10 @@ BRANCH="main"
 GH_ENVIRONMENT=""
 IDENTITY_NAME=""
 ACR_NAME="csingh914octocat5acr"
+CONTAINER_APPS_ENVIRONMENT_ID=""
 ROLE="Contributor"
 
-while getopts "g:l:r:b:e:n:a:R:h" opt; do
+while getopts "g:l:r:b:e:n:a:c:R:h" opt; do
   case "$opt" in
     g) RESOURCE_GROUP="$OPTARG" ;;
     l) LOCATION="$OPTARG" ;;
@@ -38,6 +39,7 @@ while getopts "g:l:r:b:e:n:a:R:h" opt; do
     e) GH_ENVIRONMENT="$OPTARG" ;;
     n) IDENTITY_NAME="$OPTARG" ;;
     a) ACR_NAME="$OPTARG" ;;
+    c) CONTAINER_APPS_ENVIRONMENT_ID="$OPTARG" ;;
     R) ROLE="$OPTARG" ;;
     h) sed -n '2,19p' "$0"; exit 0 ;;
     *) exit 1 ;;
@@ -77,6 +79,9 @@ echo "Resource group: $RESOURCE_GROUP ($LOCATION)"
 echo "Identity:       $IDENTITY_NAME (user-assigned managed identity)"
 echo "Registry:       $ACR_NAME"
 echo "Role:           $ROLE"
+if [[ -n "$CONTAINER_APPS_ENVIRONMENT_ID" ]]; then
+  echo "Container Apps environment: $CONTAINER_APPS_ENVIRONMENT_ID"
+fi
 echo
 
 # --- 1. Resource group -------------------------------------------------------
@@ -147,7 +152,35 @@ if [[ "$ROLE_ASSIGNMENT_COUNT" == "0" ]]; then
 fi
 echo "✓ $ROLE granted on $SCOPE"
 
-# --- 5. Federated credentials ------------------------------------------------
+# --- 5. Existing Container Apps environment (optional) ----------------------
+CONTAINER_APPS_LOCATION=""
+if [[ -n "$CONTAINER_APPS_ENVIRONMENT_ID" ]]; then
+  CONTAINER_APPS_LOCATION=$(az resource show \
+    --ids "$CONTAINER_APPS_ENVIRONMENT_ID" \
+    --query location \
+    --output tsv)
+  if [[ -z "$CONTAINER_APPS_LOCATION" ]]; then
+    echo "Could not determine the Container Apps environment location." >&2
+    exit 1
+  fi
+
+  ENVIRONMENT_ROLE="Container Apps Contributor"
+  ENVIRONMENT_ROLE_COUNT=$(az role assignment list \
+    --scope "$CONTAINER_APPS_ENVIRONMENT_ID" \
+    --assignee-object-id "$PRINCIPAL_ID" \
+    --query "[?roleDefinitionName=='$ENVIRONMENT_ROLE'] | length(@)" -o tsv)
+  if [[ "$ENVIRONMENT_ROLE_COUNT" == "0" ]]; then
+    az role assignment create \
+      --assignee-object-id "$PRINCIPAL_ID" \
+      --assignee-principal-type ServicePrincipal \
+      --role "$ENVIRONMENT_ROLE" \
+      --scope "$CONTAINER_APPS_ENVIRONMENT_ID" \
+      -o none
+  fi
+  echo "✓ $ENVIRONMENT_ROLE granted on $CONTAINER_APPS_ENVIRONMENT_ID ($CONTAINER_APPS_LOCATION)"
+fi
+
+# --- 6. Federated credentials ------------------------------------------------
 add_federated_credential() {
   local name="$1" subject="$2"
   if [[ "$(az identity federated-credential list \
@@ -182,7 +215,7 @@ if [[ -n "$EMU_REPO_SUBJECT_PREFIX" ]]; then
 fi
 echo "✓ federated credentials configured"
 
-# --- 6. GitHub secrets + variables ------------------------------------------
+# --- 7. GitHub secrets + variables ------------------------------------------
 # The default Codespaces GITHUB_TOKEN cannot write Actions secrets (403), so fall
 # back to printing the values instead of failing after the Azure side is done.
 gh_write_ok=1
@@ -195,6 +228,8 @@ push_secret AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION_ID"
 push_variable AZURE_RESOURCE_GROUP    "$RESOURCE_GROUP"
 push_variable AZURE_LOCATION          "$LOCATION"
 push_variable AZURE_IDENTITY_RESOURCE_ID "$IDENTITY_RESOURCE_ID"
+push_variable AZURE_CONTAINER_APPS_ENVIRONMENT_ID "$CONTAINER_APPS_ENVIRONMENT_ID"
+push_variable AZURE_CONTAINER_APPS_LOCATION "$CONTAINER_APPS_LOCATION"
 
 echo
 if [[ "$gh_write_ok" == "1" ]]; then
