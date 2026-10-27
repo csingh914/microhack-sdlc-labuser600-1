@@ -98,7 +98,7 @@ jobs:
             fi
             sleep 10
           done
-          docker build --file src/api-ts/Dockerfile --tag "$login_server/api:$IMAGE_TAG" src/api-ts
+          docker build --file src/api-ts/Dockerfile --tag "$login_server/api:$IMAGE_TAG" src
           docker build --file src/frontend/Dockerfile --tag "$login_server/frontend:$IMAGE_TAG" src/frontend
           docker push "$login_server/api:$IMAGE_TAG"
           docker push "$login_server/frontend:$IMAGE_TAG"

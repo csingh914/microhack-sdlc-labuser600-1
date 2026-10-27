@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/coverage
+**/test-results
+**/.cache
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+.git
