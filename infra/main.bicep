@@ -9,8 +9,8 @@
 //                                    │ logs (for a newly created environment)
 //                            Log Analytics workspace
 //
-// The frontend's nginx proxies /api to the API's internal ingress FQDN on port
-// 80 using API_HOST / API_PORT (see src/frontend/entrypoint.sh + nginx.conf).
+// The frontend's nginx proxies /api to the API's internal ingress FQDN over
+// HTTPS on port 443 using API_HOST / API_PORT (see entrypoint.sh + nginx.conf).
 //
 // The API is private, the frontend proxies /api using same-origin browser
 // requests, and SQLite remains ephemeral for this demo.
@@ -138,7 +138,7 @@ module apiApp 'modules/containerapp.bicep' = {
 // Frontend container app — nginx on 80, external, proxying to the api.
 // -----------------------------------------------------------------------------
 // Container Apps routes requests to the API's target port through its internal
-// ingress; nginx should call the ingress FQDN on port 80, not the container port.
+// ingress; nginx calls the HTTPS ingress FQDN, not the container port.
 module frontendApp 'modules/containerapp.bicep' = {
   name: 'frontend-app'
   params: {
@@ -160,7 +160,7 @@ module frontendApp 'modules/containerapp.bicep' = {
       }
       {
         name: 'API_PORT'
-        value: '80'
+        value: '443'
       }
     ]
   }

@@ -139,11 +139,11 @@ jobs:
             --output tsv)"
           echo "Deployed frontend: $frontend_url"
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$frontend_url/api/products" >/dev/null; then
+            if http_status="$(curl --fail --silent --show-error --location --connect-timeout 5 --max-time 15 --output /dev/null --write-out '%{http_code}' "$frontend_url/api/products")" && [[ "$http_status" == "200" ]]; then
               echo "Frontend and proxied API are responding."
               exit 0
             fi
-            echo "Waiting for app revision to become ready ($attempt/30)..."
+            echo "Waiting for app revision to become ready ($attempt/30; HTTP ${http_status:-no response})..."
             sleep 10
           done
           echo "::error::The deployed frontend or proxied API did not become healthy."
