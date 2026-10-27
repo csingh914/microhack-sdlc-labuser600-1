@@ -139,7 +139,7 @@ jobs:
             --output tsv)"
           echo "Deployed frontend: $frontend_url"
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error "$frontend_url/api/products" >/dev/null; then
+            if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$frontend_url/api/products" >/dev/null; then
               echo "Frontend and proxied API are responding."
               exit 0
             fi
