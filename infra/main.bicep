@@ -9,10 +9,8 @@
 //                                    │ logs (for a newly created environment)
 //                            Log Analytics workspace
 //
-// The frontend's nginx proxies /api to the api app using API_HOST / API_PORT
-// (see src/frontend/entrypoint.sh + nginx.conf). Within one Container Apps
-// environment, apps can address each other by app name, which is what makes
-// that service discovery work.
+// The frontend's nginx proxies /api to the API's internal ingress FQDN on port
+// 80 using API_HOST / API_PORT (see src/frontend/entrypoint.sh + nginx.conf).
 //
 // The API is private, the frontend proxies /api using same-origin browser
 // requests, and SQLite remains ephemeral for this demo.
@@ -139,8 +137,8 @@ module apiApp 'modules/containerapp.bicep' = {
 // -----------------------------------------------------------------------------
 // Frontend container app — nginx on 80, external, proxying to the api.
 // -----------------------------------------------------------------------------
-// The API_HOST/API_PORT env vars tell nginx where the api lives. Using the api
-// app name resolves inside the environment for service discovery.
+// Container Apps routes requests to the API's target port through its internal
+// ingress; nginx should call the ingress FQDN on port 80, not the container port.
 module frontendApp 'modules/containerapp.bicep' = {
   name: 'frontend-app'
   params: {
@@ -158,11 +156,11 @@ module frontendApp 'modules/containerapp.bicep' = {
     env: [
       {
         name: 'API_HOST'
-        value: apiAppName
+        value: apiApp.outputs.fqdn
       }
       {
         name: 'API_PORT'
-        value: '3000'
+        value: '80'
       }
     ]
   }

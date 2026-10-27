@@ -17,8 +17,8 @@ Existing or new Container Apps environment
 ```
 
 The browser calls the frontend's same-origin `/api` path. nginx forwards those
-requests to the API over the Container Apps environment's internal network, so
-the API does not need public ingress or browser-facing CORS.
+requests to the API's internal Container Apps ingress FQDN on port 80, so the
+API does not need public ingress or browser-facing CORS.
 
 The API uses its existing SQLite database inside the container. This is
 intentionally **ephemeral for the demo**: data may be lost when a revision is
