@@ -9,17 +9,37 @@
  * @swagger
  * /api/products:
  *   get:
- *     summary: Returns all products
+ *     summary: Search and filter products
  *     tags: [Products]
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         schema:
+ *           type: string
+ *         description: Case-insensitive search across product name, SKU, and description
+ *       - in: query
+ *         name: minPrice
+ *         schema:
+ *           type: number
+ *           minimum: 0
+ *         description: Minimum product price after discounts, inclusive
+ *       - in: query
+ *         name: maxPrice
+ *         schema:
+ *           type: number
+ *           minimum: 0
+ *         description: Maximum product price after discounts, inclusive
  *     responses:
  *       200:
- *         description: List of all products
+ *         description: Products matching the supplied search and price filters
  *         content:
  *           application/json:
  *             schema:
  *               type: array
  *               items:
  *                 $ref: '#/components/schemas/Product'
+ *       400:
+ *         description: Invalid price filter
  *   post:
  *     summary: Create a new product
  *     tags: [Products]
@@ -101,10 +121,27 @@
 
 import express from 'express';
 import { Product } from '../models/product';
-import { getProductsRepository } from '../repositories/productsRepo';
-import { NotFoundError } from '../utils/errors';
+import { getProductsRepository, ProductSearchFilters } from '../repositories/productsRepo';
+import { NotFoundError, ValidationError } from '../utils/errors';
 
 const router = express.Router();
+
+function getOptionalPrice(value: unknown, name: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new ValidationError(`${name} must be a non-negative number`);
+  }
+
+  const price = Number(value);
+  if (!Number.isFinite(price) || price < 0) {
+    throw new ValidationError(`${name} must be a non-negative number`);
+  }
+
+  return price;
+}
 
 // Create a new product
 router.post('/', async (req, res, next) => {
@@ -120,8 +157,27 @@ router.post('/', async (req, res, next) => {
 // Get all products
 router.get('/', async (req, res, next) => {
   try {
+    const query = req.query.q;
+    if (query !== undefined && typeof query !== 'string') {
+      throw new ValidationError('q must be a string');
+    }
+
+    const filters: ProductSearchFilters = {
+      query: query?.trim() || undefined,
+      minPrice: getOptionalPrice(req.query.minPrice, 'minPrice'),
+      maxPrice: getOptionalPrice(req.query.maxPrice, 'maxPrice'),
+    };
+
+    if (
+      filters.minPrice !== undefined &&
+      filters.maxPrice !== undefined &&
+      filters.minPrice > filters.maxPrice
+    ) {
+      throw new ValidationError('minPrice must be less than or equal to maxPrice');
+    }
+
     const repo = await getProductsRepository();
-    const products = await repo.findAll();
+    const products = await repo.findAll(filters);
     res.json(products);
   } catch (error) {
     next(error);

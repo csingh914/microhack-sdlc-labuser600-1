@@ -7,6 +7,16 @@ import { Product } from '../models/product';
 import { handleDatabaseError, NotFoundError } from '../utils/errors';
 import { buildInsertSQL, buildUpdateSQL, objectToCamelCase, mapDatabaseRows, DatabaseRow } from '../utils/sql';
 
+export interface ProductSearchFilters {
+  query?: string;
+  minPrice?: number;
+  maxPrice?: number;
+}
+
+function escapeLikeValue(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}
+
 export class ProductsRepository {
   private db: DatabaseConnection;
 
@@ -17,9 +27,34 @@ export class ProductsRepository {
   /**
    * Get all products
    */
-  async findAll(): Promise<Product[]> {
+  async findAll(filters: ProductSearchFilters = {}): Promise<Product[]> {
     try {
-      const rows = await this.db.all<DatabaseRow>('SELECT * FROM products ORDER BY product_id');
+      const conditions: string[] = [];
+      const values: (string | number)[] = [];
+
+      if (filters.query) {
+        const searchPattern = `%${escapeLikeValue(filters.query)}%`;
+        conditions.push(
+          "(LOWER(name) LIKE LOWER(?) ESCAPE '\\' OR LOWER(sku) LIKE LOWER(?) ESCAPE '\\' OR LOWER(description) LIKE LOWER(?) ESCAPE '\\')",
+        );
+        values.push(searchPattern, searchPattern, searchPattern);
+      }
+
+      if (filters.minPrice !== undefined) {
+        conditions.push('price * (1 - COALESCE(discount, 0)) >= ?');
+        values.push(filters.minPrice);
+      }
+
+      if (filters.maxPrice !== undefined) {
+        conditions.push('price * (1 - COALESCE(discount, 0)) <= ?');
+        values.push(filters.maxPrice);
+      }
+
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      const rows = await this.db.all<DatabaseRow>(
+        `SELECT * FROM products ${whereClause} ORDER BY product_id`,
+        values,
+      );
       return mapDatabaseRows<Product>(rows);
     } catch (error) {
       handleDatabaseError(error);

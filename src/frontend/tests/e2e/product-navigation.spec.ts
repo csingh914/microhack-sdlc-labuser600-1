@@ -73,4 +73,23 @@ test.describe('Product catalog discovery', () => {
     // And I am prompted to adjust the search filters
     await expect(emptyState).toContainText(/clearing.*changing.*search filters/i);
   });
+
+  test('Search by SKU without regard to case', async ({ page }) => {
+    await page.goto('/products');
+    await page.locator('input[aria-label="Search products"]').fill('cat-feed-001');
+
+    await expect(page.locator('h3:has-text("SmartFeeder One")')).toBeVisible();
+    await expect(page.locator('h3:has-text("AutoClean Litter Dome")')).toHaveCount(0);
+  });
+
+  test('Filter by price and clear filters', async ({ page }) => {
+    await page.goto('/products');
+    await page.getByLabel('Maximum price').fill('100');
+
+    await expect(page.locator('h3:has-text("SmartFeeder One")')).toBeVisible();
+    await expect(page.locator('h3:has-text("AutoClean Litter Dome")')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Clear filters' }).click();
+    await expect(page.locator('h3:has-text("AutoClean Litter Dome")')).toBeVisible();
+  });
 });

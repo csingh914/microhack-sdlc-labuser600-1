@@ -1,5 +1,5 @@
 // =============================================================================
-// main.bicep — Challenge 5 starter scaffold (OPTIONAL, SKELETON — not an answer key)
+// main.bicep — Challenge 5 Container Apps deployment
 // -----------------------------------------------------------------------------
 // Target architecture expressed here (Azure Container Apps):
 //
@@ -14,13 +14,8 @@
 // environment, apps can address each other by app name, which is what makes
 // that service discovery work.
 //
-// WHAT'S PROVIDED: the wiring, parameters, module structure, outputs.
-// WHAT'S LEFT TO YOU (look for // TODO): SKUs, ingress visibility for the api,
-// exact env/secrets, scaling rules, and the database/storage strategy.
-//
-// Deploy manually:
-//   az group create -n <rg> -l <location>
-//   az deployment group create -g <rg> -f infra/main.bicep -p infra/main.parameters.json
+// The API is private, the frontend proxies /api using same-origin browser
+// requests, and SQLite remains ephemeral for this demo.
 // =============================================================================
 
 targetScope = 'resourceGroup'
@@ -42,29 +37,24 @@ param apiImage string
 @description('Container image reference for the frontend (e.g. <acr>.azurecr.io/frontend:<tag>).')
 param frontendImage string
 
+@description('Name of the globally unique Azure Container Registry.')
+param registryName string
+
+@description('Resource ID of the user-assigned identity used for ACR push and pull.')
+param registryIdentityResourceId string
+
 @description('Minimum replicas for each app.')
 @minValue(0)
 param minReplicas int = 1
 
-@description('Maximum replicas for each app.')
+@description('Maximum replicas. Keep at one because cart state is process-local.')
 @minValue(1)
 param maxReplicas int = 3
 
-// TODO: The scaffold passes ACR admin credentials into the frontend/api modules
-//       for a quick first deploy. Prefer a user-assigned managed identity with
-//       AcrPull and remove these entirely. Left as params so nothing is baked in.
-@description('ACR admin username (leave empty to switch modules to managed identity).')
-param registryUsername string = ''
-
-@description('ACR admin password (leave empty to switch modules to managed identity).')
-@secure()
-param registryPassword string = ''
-
 // -----------------------------------------------------------------------------
-// Derived names. Registry names must be globally unique and alphanumeric only.
+// Derived names.
 // -----------------------------------------------------------------------------
 var baseName = '${namePrefix}-${environmentName}'
-var registryName = toLower(replace('${namePrefix}${environmentName}acr', '-', ''))
 var logAnalyticsName = '${baseName}-logs'
 var environmentResourceName = '${baseName}-env'
 var apiAppName = '${baseName}-api'
@@ -72,7 +62,7 @@ var frontendAppName = '${baseName}-frontend'
 
 var commonTags = {
   project: 'octocat-supply'
-  challenge: 'challenge-4-azure-deploy'
+  challenge: 'challenge-5-azure-deploy'
   managedBy: 'bicep'
   environment: environmentName
 }
@@ -115,12 +105,8 @@ module environment 'modules/containerapp-env.bicep' = {
 }
 
 // -----------------------------------------------------------------------------
-// API container app — listens on 3000.
+// API container app — internal ingress routes to the container on 3000.
 // -----------------------------------------------------------------------------
-// TODO: Ingress visibility decision. `externalIngress: true` gives the api its
-//       own public URL (handy for debugging/tests). Set it to false to make the
-//       api internal-only and reachable solely by the frontend inside the env —
-//       usually the more correct production choice. Pick one deliberately.
 module apiApp 'modules/containerapp.bicep' = {
   name: 'api-app'
   params: {
@@ -129,15 +115,13 @@ module apiApp 'modules/containerapp.bicep' = {
     environmentId: environment.outputs.environmentId
     image: apiImage
     targetPort: 3000
-    externalIngress: true
+    externalIngress: false
     registryLoginServer: registry.outputs.loginServer
-    registryUsername: registryUsername
-    registryPassword: registryPassword
+    registryIdentityResourceId: registryIdentityResourceId
     minReplicas: minReplicas
     maxReplicas: maxReplicas
     tags: commonTags
-    // TODO: Add the api's runtime env vars / secrets here (e.g. DB connection
-    //       string once you pick a database strategy).
+    // The demo uses the API's default SQLite path inside the container.
     env: []
   }
 }
@@ -157,8 +141,7 @@ module frontendApp 'modules/containerapp.bicep' = {
     targetPort: 80
     externalIngress: true
     registryLoginServer: registry.outputs.loginServer
-    registryUsername: registryUsername
-    registryPassword: registryPassword
+    registryIdentityResourceId: registryIdentityResourceId
     minReplicas: minReplicas
     maxReplicas: maxReplicas
     tags: commonTags
@@ -169,13 +152,8 @@ module frontendApp 'modules/containerapp.bicep' = {
       }
       {
         name: 'API_PORT'
-        // TODO: If you make the api internal-only, confirm the frontend still
-        //       reaches it on 3000 within the environment (it should). If you
-        //       front the api on 443/https externally, adjust API_PORT/PROTOCOL.
         value: '3000'
       }
-      // TODO: The entrypoint also honours API_PROTOCOL (default https). Add it
-      //       here if your ingress/scheme requires it.
     ]
   }
 }
@@ -189,5 +167,5 @@ output acrLoginServer string = registry.outputs.loginServer
 @description('Public URL of the frontend app.')
 output frontendUrl string = 'https://${frontendApp.outputs.fqdn}'
 
-@description('FQDN of the api app (public only while externalIngress is true).')
+@description('FQDN of the internal API app.')
 output apiFqdn string = apiApp.outputs.fqdn

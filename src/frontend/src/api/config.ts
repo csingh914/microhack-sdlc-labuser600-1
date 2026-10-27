@@ -41,5 +41,6 @@ export const api = {
     deliveries: '/api/deliveries',
     orderDetails: '/api/order-details',
     orderDetailDeliveries: '/api/order-detail-deliveries',
+    cart: '/api/cart',
   },
 };

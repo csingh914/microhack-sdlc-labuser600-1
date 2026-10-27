@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { useQuery } from 'react-query';
 import { api } from '../../../api/config';
@@ -16,31 +16,137 @@ interface Product {
   discount?: number;
 }
 
-const fetchProducts = async (): Promise<Product[]> => {
-  const { data } = await axios.get(`${api.baseURL}${api.endpoints.products}`);
+interface ProductFilters {
+  query: string;
+  minPrice: string;
+  maxPrice: string;
+}
+
+const fetchProducts = async ({ query, minPrice, maxPrice }: ProductFilters): Promise<Product[]> => {
+  const params: Record<string, string> = {};
+  if (query.trim()) {
+    params.q = query.trim();
+  }
+  if (minPrice) {
+    params.minPrice = minPrice;
+  }
+  if (maxPrice) {
+    params.maxPrice = maxPrice;
+  }
+
+  const { data } = await axios.get(`${api.baseURL}${api.endpoints.products}`, { params });
+  return data;
+};
+
+interface CartItem {
+  productId: number;
+  name: string;
+  price: number;
+  discount: number;
+  unitPrice: number;
+  quantity: number;
+  subtotal: number;
+}
+
+interface CartSummary {
+  cartId: string;
+  items: CartItem[];
+  itemCount: number;
+  total: number;
+}
+
+const getCartId = () => {
+  const storedCartId = localStorage.getItem('octocat-cart-id');
+  if (storedCartId) {
+    return storedCartId;
+  }
+
+  const newCartId = `cart-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  localStorage.setItem('octocat-cart-id', newCartId);
+  return newCartId;
+};
+
+const fetchCart = async (): Promise<CartSummary> => {
+  const cartId = getCartId();
+  const { data } = await axios.get(`${api.baseURL}${api.endpoints.cart}`, {
+    headers: { 'X-Cart-Id': cartId },
+  });
   return data;
 };
 
 export default function Products() {
   const [quantities, setQuantities] = useState<Record<number, number>>({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [minPrice, setMinPrice] = useState('');
+  const [maxPrice, setMaxPrice] = useState('');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [showModal, setShowModal] = useState(false);
-  const { data: products, isLoading, error } = useQuery('products', fetchProducts);
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    cardNumber: '',
+    expiryDate: '',
+    cvv: '',
+    nameOnCard: '',
+  });
+  const [cartId, setCartId] = useState<string>('');
+  const isValidPrice = (value: string) =>
+    value === '' || (Number.isFinite(Number(value)) && Number(value) >= 0);
+  const hasInvalidPriceRange =
+    !isValidPrice(minPrice) ||
+    !isValidPrice(maxPrice) ||
+    (minPrice !== '' && maxPrice !== '' && Number(minPrice) > Number(maxPrice));
+  const { data: products, isLoading, error } = useQuery(
+    ['products', searchTerm, minPrice, maxPrice],
+    () => fetchProducts({ query: searchTerm, minPrice, maxPrice }),
+    { enabled: !hasInvalidPriceRange, keepPreviousData: true },
+  );
+  const { data: cart, refetch: refetchCart } = useQuery('cart', fetchCart, {
+    enabled: false,
+  });
   const { darkMode } = useTheme();
 
-  const filteredProducts = products?.filter(
-    (product) =>
-      product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      product.description.toLowerCase().includes(searchTerm.toLowerCase()),
-  );
+  useEffect(() => {
+    const initialCartId = getCartId();
+    setCartId(initialCartId);
+    refetchCart();
+  }, [refetchCart]);
 
-  // Inconsistent loop direction example: process products in reverse incorrectly
-  if (filteredProducts && filteredProducts.length === 0) {
-    for (let i = filteredProducts.length - 1; i > 5; ++i) {
-      filteredProducts[i].discount = 0;
+  const filteredProducts = products;
+
+  const cartTotal = useMemo(() => cart?.total ?? 0, [cart]);
+  const cartItemCount = useMemo(() => cart?.itemCount ?? 0, [cart]);
+
+  const handleCheckout = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!cart?.items.length) {
+      return;
     }
-  }
+
+    try {
+      const response = await axios.post(
+        `${api.baseURL}${api.endpoints.cart}/checkout`,
+        {
+          paymentMethod: 'card',
+          ...paymentForm,
+        },
+        { headers: { 'X-Cart-Id': cartId || getCartId() } },
+      );
+
+      setCheckoutOpen(false);
+      setCheckoutError(null);
+      setPaymentForm({ cardNumber: '', expiryDate: '', cvv: '', nameOnCard: '' });
+      await refetchCart();
+      alert(`Payment approved. Order ${response.data.order.orderId} created.`);
+    } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.data?.error?.message) {
+        setCheckoutError(error.response.data.error.message);
+        return;
+      }
+
+      setCheckoutError('Unable to complete checkout. Please try again.');
+    }
+  };
 
   const handleQuantityChange = (productId: number, change: number) => {
     setQuantities((prev) => ({
@@ -49,16 +155,45 @@ export default function Products() {
     }));
   };
 
-  const handleAddToCart = (productId: number) => {
-    const quantity = quantities[productId] || 0;
-    if (quantity > 0) {
-      // TODO: Implement cart functionality
-      alert(`Added ${quantity} items to cart`);
-      setQuantities((prev) => ({
-        ...prev,
-        [productId]: 0,
-      }));
+  const handleAddToCart = async (product: Product) => {
+    const quantity = quantities[product.productId] || 0;
+    if (quantity <= 0) {
+      return;
     }
+
+    await axios.post(
+      `${api.baseURL}${api.endpoints.cart}/items`,
+      {
+        productId: product.productId,
+        quantity,
+        name: product.name,
+        price: product.price,
+        discount: product.discount ?? 0,
+      },
+      { headers: { 'X-Cart-Id': cartId || getCartId() } },
+    );
+
+    setQuantities((prev) => ({
+      ...prev,
+      [product.productId]: 0,
+    }));
+    await refetchCart();
+  };
+
+  const handleCartItemChange = async (productId: number, quantity: number) => {
+    if (quantity <= 0) {
+      await axios.delete(`${api.baseURL}${api.endpoints.cart}/items/${productId}`, {
+        headers: { 'X-Cart-Id': cartId || getCartId() },
+      });
+    } else {
+      await axios.put(
+        `${api.baseURL}${api.endpoints.cart}/items/${productId}`,
+        { quantity },
+        { headers: { 'X-Cart-Id': cartId || getCartId() } },
+      );
+    }
+
+    await refetchCart();
   };
 
   const handleProductClick = (product: Product) => {
@@ -66,7 +201,7 @@ export default function Products() {
     setShowModal(true);
   };
 
-  if (isLoading) {
+  if (isLoading && !products) {
     return (
       <div
         className={`min-h-screen ${darkMode ? 'bg-dark' : 'bg-gray-100'} pt-20 px-4 transition-colors duration-300`}
@@ -126,8 +261,205 @@ export default function Products() {
             </svg>
           </div>
 
+          <div className="flex flex-wrap items-end gap-4">
+            <div>
+              <label
+                htmlFor="min-price"
+                className={`mb-1 block text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+              >
+                Minimum price
+              </label>
+              <input
+                id="min-price"
+                type="number"
+                min="0"
+                step="0.01"
+                value={minPrice}
+                onChange={(event) => setMinPrice(event.target.value)}
+                className={`w-36 rounded-lg border px-3 py-2 ${darkMode ? 'border-gray-700 bg-gray-800 text-light' : 'border-gray-300 bg-white text-gray-800'}`}
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="max-price"
+                className={`mb-1 block text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+              >
+                Maximum price
+              </label>
+              <input
+                id="max-price"
+                type="number"
+                min="0"
+                step="0.01"
+                value={maxPrice}
+                onChange={(event) => setMaxPrice(event.target.value)}
+                className={`w-36 rounded-lg border px-3 py-2 ${darkMode ? 'border-gray-700 bg-gray-800 text-light' : 'border-gray-300 bg-white text-gray-800'}`}
+              />
+            </div>
+            {(searchTerm || minPrice || maxPrice) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchTerm('');
+                  setMinPrice('');
+                  setMaxPrice('');
+                }}
+                className={`rounded-lg px-3 py-2 text-sm ${darkMode ? 'bg-gray-700 text-light hover:bg-gray-600' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+          {hasInvalidPriceRange && (
+            <p className="text-sm text-red-500" role="alert">
+              Enter non-negative prices, with the minimum no greater than the maximum.
+            </p>
+          )}
+
+          <div
+            className={`rounded-xl border p-4 ${darkMode ? 'bg-gray-800 border-gray-700 text-light' : 'bg-white border-gray-200 text-gray-800'} shadow-sm`}
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className={`text-sm uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  Cart summary
+                </p>
+                <p className="text-2xl font-bold text-primary">${cartTotal.toFixed(2)}</p>
+              </div>
+              <div className={`text-right ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                <p className="text-sm">Items</p>
+                <p className="text-lg font-semibold">{cartItemCount}</p>
+              </div>
+            </div>
+
+            {cart?.items.length ? (
+              <div className="mt-4 space-y-2">
+                {cart.items.map((item) => (
+                  <div
+                    key={item.productId}
+                    className={`flex items-center justify-between gap-3 rounded-lg px-3 py-2 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
+                  >
+                    <div>
+                      <p className="font-medium">{item.name}</p>
+                      <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                        ${item.unitPrice.toFixed(2)} each
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleCartItemChange(item.productId, item.quantity - 1)}
+                        className={`h-7 w-7 rounded ${darkMode ? 'bg-gray-600 text-light' : 'bg-gray-200 text-gray-700'}`}
+                        aria-label={`Decrease ${item.name} quantity in cart`}
+                      >
+                        −
+                      </button>
+                      <span className="min-w-[1.5rem] text-center">{item.quantity}</span>
+                      <button
+                        onClick={() => handleCartItemChange(item.productId, item.quantity + 1)}
+                        className={`h-7 w-7 rounded ${darkMode ? 'bg-gray-600 text-light' : 'bg-gray-200 text-gray-700'}`}
+                        aria-label={`Increase ${item.name} quantity in cart`}
+                      >
+                        +
+                      </button>
+                      <button
+                        onClick={() => handleCartItemChange(item.productId, 0)}
+                        className="ml-2 text-sm text-red-500 hover:text-red-400"
+                        aria-label={`Remove ${item.name} from cart`}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setCheckoutOpen(true)}
+                  className="mt-3 w-full rounded-lg bg-primary px-4 py-2 font-medium text-white hover:bg-accent"
+                >
+                  Checkout
+                </button>
+              </div>
+            ) : (
+              <p className={`mt-4 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                Your cart is empty.
+              </p>
+            )}
+          </div>
+
+          {checkoutOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+              <div className={`${darkMode ? 'bg-gray-800 text-light' : 'bg-white text-gray-800'} w-full max-w-md rounded-xl p-6 shadow-xl`}>
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-xl font-bold">Checkout</h2>
+                  <button onClick={() => setCheckoutOpen(false)} className="text-xl leading-none">
+                    ×
+                  </button>
+                </div>
+
+                <form onSubmit={handleCheckout} className="space-y-4">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Cardholder name</label>
+                    <input
+                      type="text"
+                      value={paymentForm.nameOnCard}
+                      onChange={(event) => setPaymentForm((prev) => ({ ...prev, nameOnCard: event.target.value }))}
+                      className={`w-full rounded-lg border px-3 py-2 ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'}`}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium">Card number</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={paymentForm.cardNumber}
+                      onChange={(event) => setPaymentForm((prev) => ({ ...prev, cardNumber: event.target.value }))}
+                      className={`w-full rounded-lg border px-3 py-2 ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'}`}
+                      placeholder="4242 4242 4242 4242"
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium">Expiry</label>
+                      <input
+                        type="text"
+                        value={paymentForm.expiryDate}
+                        onChange={(event) => setPaymentForm((prev) => ({ ...prev, expiryDate: event.target.value }))}
+                        className={`w-full rounded-lg border px-3 py-2 ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'}`}
+                        placeholder="12/30"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium">CVV</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={paymentForm.cvv}
+                        onChange={(event) => setPaymentForm((prev) => ({ ...prev, cvv: event.target.value }))}
+                        className={`w-full rounded-lg border px-3 py-2 ${darkMode ? 'border-gray-700 bg-gray-900' : 'border-gray-300 bg-white'}`}
+                        placeholder="123"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  {checkoutError && (
+                    <p className="rounded-lg border border-red-500 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+                      {checkoutError}
+                    </p>
+                  )}
+
+                  <button type="submit" className="w-full rounded-lg bg-primary px-4 py-2 font-medium text-white hover:bg-accent">
+                    Pay ${cartTotal.toFixed(2)}
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
+
           {/* Empty state when no products match */}
-          {(!filteredProducts || filteredProducts.length === 0) && (
+          {!hasInvalidPriceRange && (!filteredProducts || filteredProducts.length === 0) && (
             <div
               className={`flex flex-col items-center justify-center text-center py-20 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'
                 } shadow-sm border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}
@@ -236,7 +568,7 @@ export default function Products() {
                         </button>
                       </div>
                       <button
-                        onClick={() => handleAddToCart(product.productId)}
+                        onClick={() => handleAddToCart(product)}
                         className={`px-4 py-2 rounded-lg transition-colors ${quantities[product.productId]
                           ? 'bg-primary hover:bg-accent text-white'
                           : `${darkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-200 text-gray-500'} cursor-not-allowed`

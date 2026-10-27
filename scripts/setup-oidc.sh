@@ -8,15 +8,15 @@
 #   - No Application Administrator / directory write privileges required.
 #   - It can additionally be attached to Azure resources (ACR pull, Key Vault, ...).
 #
-# Creates the identity, grants it Contributor on the target resource group, adds
-# federated credentials for this repo, and pushes the ids into GitHub Actions
+# Creates the identity and ACR, grants the required roles, adds federated
+# credentials for this repo, and pushes the ids into GitHub Actions
 # secrets/variables.
 #
 # Prereqs: az login, and (optionally) gh auth login with a token that can write
 # Actions secrets. If the gh write fails the values are printed for manual entry.
 #
 # Usage:
-#   ./scripts/setup-oidc.sh [-g <resource-group>] [-l <location>] [-r <owner/repo>] [-b <branch>] [-e <gh-environment>] [-n <identity-name>]
+#   ./scripts/setup-oidc.sh [-g <resource-group>] [-l <location>] [-r <owner/repo>] [-b <branch>] [-e <gh-environment>] [-n <identity-name>] [-a <acr-name>]
 
 set -euo pipefail
 
@@ -26,9 +26,10 @@ REPO=""
 BRANCH="main"
 GH_ENVIRONMENT=""
 IDENTITY_NAME=""
+ACR_NAME="csingh914octocat5acr"
 ROLE="Contributor"
 
-while getopts "g:l:r:b:e:n:R:h" opt; do
+while getopts "g:l:r:b:e:n:a:R:h" opt; do
   case "$opt" in
     g) RESOURCE_GROUP="$OPTARG" ;;
     l) LOCATION="$OPTARG" ;;
@@ -36,6 +37,7 @@ while getopts "g:l:r:b:e:n:R:h" opt; do
     b) BRANCH="$OPTARG" ;;
     e) GH_ENVIRONMENT="$OPTARG" ;;
     n) IDENTITY_NAME="$OPTARG" ;;
+    a) ACR_NAME="$OPTARG" ;;
     R) ROLE="$OPTARG" ;;
     h) sed -n '2,19p' "$0"; exit 0 ;;
     *) exit 1 ;;
@@ -73,6 +75,7 @@ echo "Subscription:   $SUBSCRIPTION_ID"
 echo "Tenant:         $TENANT_ID"
 echo "Resource group: $RESOURCE_GROUP ($LOCATION)"
 echo "Identity:       $IDENTITY_NAME (user-assigned managed identity)"
+echo "Registry:       $ACR_NAME"
 echo "Role:           $ROLE"
 echo
 
@@ -97,19 +100,54 @@ read -r CLIENT_ID PRINCIPAL_ID IDENTITY_RESOURCE_ID <<<"$(az identity show \
   --resource-group "$RESOURCE_GROUP" \
   --query "[clientId, principalId, id]" -o tsv | paste -s)"
 
-# --- 3. Role assignment (scoped to the resource group) -----------------------
+# --- 3. Container registry and image permissions ----------------------------
+if az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+  echo "✓ reusing existing container registry"
+else
+  az acr create \
+    --name "$ACR_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --location "$LOCATION" \
+    --sku Basic \
+    --admin-enabled false \
+    -o none
+  echo "✓ created container registry with admin credentials disabled"
+fi
+
+REGISTRY_SCOPE=$(az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+for registry_role in AcrPush AcrPull; do
+  role_assignment_count=$(az role assignment list \
+    --scope "$REGISTRY_SCOPE" \
+    --assignee-object-id "$PRINCIPAL_ID" \
+    --query "[?roleDefinitionName=='$registry_role'] | length(@)" -o tsv)
+  if [[ "$role_assignment_count" == "0" ]]; then
+    az role assignment create \
+      --assignee-object-id "$PRINCIPAL_ID" \
+      --assignee-principal-type ServicePrincipal \
+      --role "$registry_role" \
+      --scope "$REGISTRY_SCOPE" \
+      -o none
+  fi
+  echo "✓ $registry_role granted on $REGISTRY_SCOPE"
+done
+
+# --- 4. Role assignment (scoped to the resource group) -----------------------
 SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP"
-# --assignee-object-id + principal type skips the Graph lookup, which also avoids
-# a race against replication of a freshly created identity.
-az role assignment create \
-  --assignee-object-id "$PRINCIPAL_ID" \
-  --assignee-principal-type ServicePrincipal \
-  --role "$ROLE" \
+ROLE_ASSIGNMENT_COUNT=$(az role assignment list \
   --scope "$SCOPE" \
-  -o none 2>/dev/null || true
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --query "[?roleDefinitionName=='$ROLE'] | length(@)" -o tsv)
+if [[ "$ROLE_ASSIGNMENT_COUNT" == "0" ]]; then
+  az role assignment create \
+    --assignee-object-id "$PRINCIPAL_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role "$ROLE" \
+    --scope "$SCOPE" \
+    -o none
+fi
 echo "✓ $ROLE granted on $SCOPE"
 
-# --- 4. Federated credentials ------------------------------------------------
+# --- 5. Federated credentials ------------------------------------------------
 add_federated_credential() {
   local name="$1" subject="$2"
   if [[ "$(az identity federated-credential list \
@@ -144,7 +182,7 @@ if [[ -n "$EMU_REPO_SUBJECT_PREFIX" ]]; then
 fi
 echo "✓ federated credentials configured"
 
-# --- 5. GitHub secrets + variables ------------------------------------------
+# --- 6. GitHub secrets + variables ------------------------------------------
 # The default Codespaces GITHUB_TOKEN cannot write Actions secrets (403), so fall
 # back to printing the values instead of failing after the Azure side is done.
 gh_write_ok=1
